@@ -620,6 +620,8 @@ static void _precompute_yoff(struct gb_s *gb) {
       priv->surface_yoff[i] = (x + i) * priv->fb->xsize + surface_xoff;
       if (priv->fb->depth == LCD_SURFACE_PIXFMT_XRGB) {
         priv->surface_yoff[i] /= 4;
+      } else if (priv->fb->depth == LCD_SURFACE_PIXFMT_RGB565) {
+        priv->surface_yoff[i] /= 2;
       }
     }
   } else {
@@ -630,7 +632,7 @@ static void _precompute_yoff(struct gb_s *gb) {
       surface_xoff = x / 2;
       break;
     case LCD_SURFACE_PIXFMT_RGB565:
-      surface_xoff = y * 2;
+      surface_xoff = x * 2;
       break;
     case LCD_SURFACE_PIXFMT_XRGB:
       surface_xoff = x * 4;
@@ -641,6 +643,8 @@ static void _precompute_yoff(struct gb_s *gb) {
       priv->surface_yoff[i] = (y + i) * priv->fb->xsize + surface_xoff;
       if (priv->fb->depth == LCD_SURFACE_PIXFMT_XRGB) {
         priv->surface_yoff[i] /= 4;
+      } else if (priv->fb->depth == LCD_SURFACE_PIXFMT_RGB565) {
+        priv->surface_yoff[i] /= 2;
       }
     }
   }
@@ -1054,7 +1058,7 @@ void lcd_draw_line_fast_rgb565(struct gb_s *gb, const uint8_t pixels[160], const
     } else {
 #endif
       /* TODO palette */
-      ((uint16_t *) fb->buffer)[pixel_offset] = COLOR_MAP_16[pixels[x] & 3];
+      ((uint16_t *) fb->buffer)[pixel_offset] = COLOR_MAP_16_BGR565[pixels[x] & 3];
 #if PEANUT_FULL_GBC_SUPPORT
     }
 #endif
