@@ -4,3 +4,6 @@
 [submodule "ext/Peanut-GBC"]
 	path = ext/Peanut-GBC
 	url = https://github.com/Project-Muteki/Peanut-GBC.git
+[submodule "ext/Walnut-CGB"]
+	path = ext/Walnut-CGB
+	url = https://github.com/Mr-PauI/Walnut-CGB.git

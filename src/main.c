@@ -69,7 +69,12 @@ static void audio_callback_wrapper(audio_sample_t *samples) {
 }
 #endif  // LEGACY_APU
 
+#ifdef WB_ENGINE_WALNUT
+struct gb_s;
+#include "walnut_cgb.h"
+#else
 #include "peanut_gb.h"
+#endif
 
 #define SA7101_LCD_CTRL_SET_CURSOR_Y (0x20)
 #define SA7101_LCD_CTRL_SET_CURSOR_X (0x21)
@@ -1104,6 +1109,35 @@ uint8_t gb_rom_read(struct gb_s *gb, const uint_fast32_t addr) {
   return priv->rom[addr];
 }
 
+#ifdef WB_ENGINE_WALNUT
+uint16_t gb_rom_read16(struct gb_s *gb, const uint_fast32_t addr) {
+  const struct priv_s * const priv = gb->direct.priv;
+  const uint8_t *src = &priv->rom[addr];
+  // Alignment check, not required for all platforms. ESP32 series mcu flash
+  // memory and psram sources *require* this
+  if ((uintptr_t)src & 1) {
+    // fallback to safe 8-bit reads when not aligned
+    return ((uint16_t)src[0]) | ((uint16_t)src[1] << 8);
+  }
+  return *(uint16_t *)src;
+}
+
+uint32_t gb_rom_read32(struct gb_s *gb, uint_fast32_t addr) {
+  const struct priv_s * const priv = gb->direct.priv;
+  const uint8_t *src = &priv->rom[addr];
+
+  // Classic Arm CPUs require 32-bit alignment for word loads
+  if ((uintptr_t)src & 3) {
+    // Safe fallback
+    return (uint32_t)src[0] | ((uint32_t)src[1] << 8) |
+           ((uint32_t)src[2] << 16) | ((uint32_t)src[3] << 24);
+  }
+
+  // Aligned fast path
+  return *(const uint32_t *)src;
+}
+#endif
+
 uint8_t gb_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
   const struct priv_s * const priv = gb->direct.priv;
   return priv->cart_ram[addr];
@@ -1340,8 +1374,11 @@ static void loop(struct gb_s * const gb) {
     }
 
     gb->direct.joypad = ~pad_key_state;
-
+#ifdef WB_ENGINE_WALNUT
+    gb_run_frame_dualfetch(gb);
+#else
     gb_run_frame(gb);
+#endif
     if (priv->sound_on) {
       uint8_t pbuf = audio_buffer_producer_offset;
       if (((pbuf + 1) & 3) != audio_buffer_consumer_offset) {
@@ -1556,7 +1593,20 @@ int main(void) {
     return 1;
   }
 
+#ifdef WB_ENGINE_WALNUT
+  enum gb_init_error_e gb_ret = gb_init(
+    &gb,
+    &gb_rom_read,
+    &gb_rom_read16,
+    &gb_rom_read32,
+    &gb_cart_ram_read,
+    &gb_cart_ram_write,
+    &gb_error,
+    &priv
+  );
+#else
   enum gb_init_error_e gb_ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read, &gb_cart_ram_write, &gb_error, &priv);
+#endif
 
   switch(gb_ret) {
   case GB_INIT_NO_ERROR:

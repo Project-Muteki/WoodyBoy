@@ -1,0 +1,1 @@
+option('wbc_engine', type : 'combo', choices : ['peanut', 'walnut'], value : 'peanut', description : 'Select emulation engine to use with WBC build.')

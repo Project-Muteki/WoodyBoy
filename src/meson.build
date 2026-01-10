@@ -1,5 +1,6 @@
 c = meson.get_compiler('c')
 mutekix_lib = c.find_library('mutekix', required : true)
+wbc_engine = get_option('wbc_engine')
 
 wb = executable('wb',
   'main.c',
@@ -8,18 +9,32 @@ wb = executable('wb',
   dependencies: mutekix_lib,
   link_with : ext_lib,
   install : false,
-  c_args: ['-DMINIGB_APU_AUDIO_FORMAT_S16SYS'],
+  c_args: ['-DMINIGB_APU_AUDIO_FORMAT_S16SYS', '-DWB_ENGINE_PEANUT'],
   link_args: ['-Wl,--gc-sections'])
 
-wbc = executable('wbc',
-  'main.c',
-  include_directories : ext_cgb_include,
-  name_suffix: 'elf',
-  dependencies: mutekix_lib,
-  link_with : ext_cgb_lib,
-  install : false,
-  c_args: ['-DPEANUT_FULL_GBC_SUPPORT=1', '-DMINIGB_APU_AUDIO_FORMAT_S16SYS'],
-  link_args: ['-Wl,--gc-sections'])
+if wbc_engine == 'peanut'
+  wbc = executable('wbc',
+    'main.c',
+    include_directories : ext_cgb_include,
+    name_suffix: 'elf',
+    dependencies: mutekix_lib,
+    link_with : ext_cgb_lib,
+    install : false,
+    c_args: ['-DPEANUT_FULL_GBC_SUPPORT=1', '-DMINIGB_APU_AUDIO_FORMAT_S16SYS', '-DWB_ENGINE_PEANUT'],
+    link_args: ['-Wl,--gc-sections'])
+elif wbc_engine == 'walnut'
+  wbc = executable('wbc',
+    'main.c',
+    include_directories : ext_cgb_include,
+    name_suffix: 'elf',
+    dependencies: mutekix_lib,
+    link_with : ext_cgb_lib,
+    install : false,
+    c_args: ['-DPEANUT_FULL_GBC_SUPPORT=1', '-DMINIGB_APU_AUDIO_FORMAT_S16SYS', '-DWB_ENGINE_WALNUT'],
+    link_args: ['-Wl,--gc-sections'])
+else
+  error('Unknown wbc_engine value. Please report this as a bug.')
+endif
 
 if romtool.found() and elf2bestape.found()
   romspec = custom_target('romspec',
