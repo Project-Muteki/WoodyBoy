@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <inttypes.h>
-#include <muteki/ui/common.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,12 +13,12 @@
 #include <muteki/ini.h>
 #include <muteki/threading.h>
 #include <muteki/utf16.h>
-#include <muteki/ui/canvas.h>
-#include <muteki/ui/font.h>
-#include <muteki/ui/event.h>
-#include <muteki/ui/surface.h>
-#include <muteki/ui/views/filepicker.h>
-#include <muteki/ui/views/messagebox.h>
+#include <muteki/draw/font.h>
+#include <muteki/draw/lcd.h>
+#include <muteki/draw/surface.h>
+#include <muteki/ui/framework/event.h>
+#include <muteki/ui/modals/filepicker.h>
+#include <muteki/ui/modals/messagebox.h>
 
 #include <mutekix/time.h>
 
@@ -204,11 +203,11 @@ volatile bool audio_running = false;
 volatile bool tim1_emulator_running = false;
 volatile unsigned short sched_timer_ticks = 0;
 audio_sample_t *audio_buffer = NULL;
-thread_t *audio_worker_inst = NULL;
-thread_t *input_worker_inst = NULL;
-thread_t *sched_timer_worker_inst = NULL;
-event_t *audio_shutdown_ack = NULL;
-event_t *input_poller_shutdown_ack = NULL;
+bxc_thread_t *audio_worker_inst = NULL;
+bxc_thread_t *input_worker_inst = NULL;
+bxc_thread_t *sched_timer_worker_inst = NULL;
+bxc_event_t *audio_shutdown_ack = NULL;
+bxc_event_t *input_poller_shutdown_ack = NULL;
 
 static struct key_binding_s g_key_binding = {0};
 
@@ -284,16 +283,16 @@ static inline void _ext_ticker_s3c(void) {
   /* TODO: what about single-shot events? Do we still need to request (lower rate) event
      spamming so we know whether a single-shot was held-down? */
   while ((TestPendEvent(&uievent) || TestKeyEvent(&uievent)) && GetEvent(&uievent)) {
-    if (uievent.event_type == UI_EVENT_TYPE_KEY) {
-      if (uievent.key_code0 == KEY_POWER) {
+    if (uievent.body.event_type == UI_EVENT_TYPE_KEY) {
+      if (uievent.body.key_code0 == KEY_POWER) {
         power_event = true;
       } else {
-        pad_key_state_local |= _map_pad_state(uievent.key_code0);
-        emu_key_state_local |= _map_emu_key_state(uievent.key_code0);
+        pad_key_state_local |= _map_pad_state(uievent.body.key_code0);
+        emu_key_state_local |= _map_emu_key_state(uievent.body.key_code0);
       }
-    } else if (uievent.event_type == UI_EVENT_TYPE_KEY_UP) {
-      pad_key_state_local &= ~_map_pad_state(uievent.key_code0);
-      emu_key_state_local &= ~_map_emu_key_state(uievent.key_code0);
+    } else if (uievent.body.event_type == UI_EVENT_TYPE_KEY_UP) {
+      pad_key_state_local &= ~_map_pad_state(uievent.body.key_code0);
+      emu_key_state_local &= ~_map_emu_key_state(uievent.body.key_code0);
     }
   }
 
@@ -315,14 +314,14 @@ static inline void _ext_ticker_dis(void) {
   if (down_counter <= 3) {
     while (_test_events_no_shift(&uievent)) {
       hit = true;
-      if (GetEvent(&uievent) && uievent.event_type == UI_EVENT_TYPE_KEY) {
-        if (uievent.key_code0 == KEY_POWER || uievent.key_code1 == KEY_POWER) {
+      if (GetEvent(&uievent) && uievent.body.event_type == UI_EVENT_TYPE_KEY) {
+        if (uievent.body.key_code0 == KEY_POWER || uievent.body.key_code1 == KEY_POWER) {
           hit = false;
           down_counter = 1;
           power_event = true;
         } else {
-          pressing0 = uievent.key_code0;
-          pressing1 = uievent.key_code1;
+          pressing0 = uievent.body.key_code0;
+          pressing1 = uievent.body.key_code1;
           down_counter = 7;
         }
       } else {
@@ -494,7 +493,7 @@ static void _input_poller_end(struct gb_s *gb) {
     SetSysKeyState(&KEY_EVENT_CONFIG_DRAIN);
 
     tim1_emulator_running = false;
-    while (OSWaitForEvent(input_poller_shutdown_ack, 1000) != WAIT_RESULT_RESOLVED) {};
+    while (OSWaitForEvent(input_poller_shutdown_ack, 1000) != BXC_WAIT_RESULT_RESOLVED) {};
     OSCloseEvent(input_poller_shutdown_ack);
     OSSleep(1);
     if (input_worker_inst != NULL) {
@@ -537,7 +536,7 @@ static void _sound_off(struct gb_s *gb) {
 
   if (priv->sound_on) {
     audio_running = false;
-    while (OSWaitForEvent(audio_shutdown_ack, 1000) != WAIT_RESULT_RESOLVED) {};
+    while (OSWaitForEvent(audio_shutdown_ack, 1000) != BXC_WAIT_RESULT_RESOLVED) {};
     OSCloseEvent(audio_shutdown_ack);
     OSSleep(1);
     if (audio_worker_inst != NULL) {
@@ -556,8 +555,8 @@ static void _set_blit_parameter(struct gb_s *gb, const lcd_surface_t * const sur
   struct priv_s *priv = gb->direct.priv;
 
   const bool rotate = (!priv->fallback_blit) && (
-    priv->rotation == ROTATION_TOP_SIDE_FACING_LEFT ||
-    priv->rotation == ROTATION_TOP_SIDE_FACING_RIGHT
+    priv->rotation == LCD_ROTATION_TOP_SIDE_LEFT ||
+    priv->rotation == LCD_ROTATION_TOP_SIDE_RIGHT
   );
 
   if (surface == NULL) {
@@ -606,7 +605,7 @@ static void _precompute_yoff(struct gb_s *gb) {
 
   if (
       (!use_intermediate_fb) &&
-      (priv->rotation == ROTATION_TOP_SIDE_FACING_LEFT || priv->rotation == ROTATION_TOP_SIDE_FACING_RIGHT)
+      (priv->rotation == LCD_ROTATION_TOP_SIDE_LEFT || priv->rotation == LCD_ROTATION_TOP_SIDE_RIGHT)
   ) {
     size_t surface_xoff = y;
 
@@ -840,7 +839,7 @@ void lcd_draw_line_fast_p4(struct gb_s *gb, const uint8_t pixels[160], const uin
 #endif
   }
 
-  _BitBlt(priv->real_fb, priv->canvas_x & 0xfffe, priv->canvas_y + line - priv->yskip, LCD_WIDTH, 1, priv->fb, 0, 0, BLIT_NONE);
+  _BitBlt(priv->real_fb, priv->canvas_x & 0xfffe, priv->canvas_y + line - priv->yskip, LCD_WIDTH, 1, priv->fb, 0, 0, LCD_SURFACE_BLIT_NONE);
 }
 
 #define p0p0 (p0 & 0xf)
@@ -1011,17 +1010,17 @@ void lcd_draw_line_fast_xrgb_rot(struct gb_s *gb, const uint8_t pixels[160], con
 
     size_t pixel_offset;
     switch (priv->rotation) {
-      case ROTATION_TOP_SIDE_FACING_UP:
+      case LCD_ROTATION_TOP_SIDE_UP:
       default:
         pixel_offset = priv->surface_yoff[line] + x;
         break;
-      case ROTATION_TOP_SIDE_FACING_LEFT:
+      case LCD_ROTATION_TOP_SIDE_LEFT:
         pixel_offset = priv->surface_yoff[LCD_WIDTH - 1 - x] + line;
         break;
-      case ROTATION_TOP_SIDE_FACING_DOWN:
+      case LCD_ROTATION_TOP_SIDE_DOWN:
         pixel_offset = priv->surface_yoff[LCD_HEIGHT - 1 - line] + (LCD_WIDTH - 1 - x);
         break;
-      case ROTATION_TOP_SIDE_FACING_RIGHT:
+      case LCD_ROTATION_TOP_SIDE_RIGHT:
         pixel_offset = priv->surface_yoff[x] + (LCD_HEIGHT - 1 - line);
         break;
     }
@@ -1184,7 +1183,7 @@ void gb_error(struct gb_s *gb, const enum gb_error_e gb_err, const uint16_t addr
 
   instr_byte = __gb_read(gb, addr);
 
-  messagebox_format(MB_ICON_ERROR | MB_BUTTON_OK,
+  messagebox_format(UI_MB_ICON_ERROR | UI_MB_BUTTON_OK,
     "Error: %s at 0x%04X%s with instruction %02X.\n"
     "Cart RAM saved to recovery.sav\n"
     "Exiting.\n",
@@ -1209,7 +1208,7 @@ static int rom_file_picker(struct priv_s * const priv) {
   UTF16 utf16path[FILEPICKER_CONTEXT_OUTPUT_MAX_LFN] = {0};
 
   /* Invoke file picker. */
-  filepicker_context_t ctx = {0};
+  ui_filepicker_context_t ctx = {0};
   void *ctx_out = FILEPICKER_CONTEXT_OUTPUT_ALLOC(calloc, 1, true);
   if (ctx_out == NULL) {
     return 2;
@@ -1262,7 +1261,7 @@ static int rom_file_picker(struct priv_s * const priv) {
 }
 
 static inline void sleep_with_double_rtc(unsigned short ms) {
-  datetime_t dt;
+  bxc_datetime_t dt;
 
   if (ms >= 499) {
     return;
@@ -1322,9 +1321,9 @@ static void loop(struct gb_s * const gb) {
         _input_poller_end(gb);
         unsigned int ret = MessageBox(
           _BUL("Are you sure you want to quit?"),
-          MB_ICON_QUESTION | MB_BUTTON_YES | MB_BUTTON_NO
+          UI_MB_ICON_QUESTION | UI_MB_BUTTON_YES | UI_MB_BUTTON_NO
         );
-        if (ret == MB_RESULT_YES) {
+        if (ret == UI_MB_RESULT_YES) {
           break;
         }
         if (priv->config.sync_rtc_on_resume) {
@@ -1390,7 +1389,7 @@ static void loop(struct gb_s * const gb) {
     }
 
     if (priv->fallback_blit && !priv->p4_1line_buffer) {
-      _BitBlt(priv->real_fb, priv->canvas_x, priv->canvas_y, priv->width, priv->height, priv->fb, 0, 0, BLIT_NONE);
+      _BitBlt(priv->real_fb, priv->canvas_x, priv->canvas_y, priv->width, priv->height, priv->fb, 0, 0, LCD_SURFACE_BLIT_NONE);
     }
 
     if (emu_key_state_current & EMU_KEY_SRAM_COMMIT) {
@@ -1461,7 +1460,7 @@ static void migrate_config(void) {
     return;
   }
   if (errno != ENOENT) {
-    MessageBox(_BUL("Config auto migration failed: target file is in unknown state."), MB_DEFAULT);
+    MessageBox(_BUL("Config auto migration failed: target file is in unknown state."), UI_MB_DEFAULT);
     return;
   }
 
@@ -1470,38 +1469,38 @@ static void migrate_config(void) {
       size_t file_size = st.st_size;
       int result = mkdir("C:\\APPS\\woodyboy", 0755);
       if (result != 0 && errno != EEXIST) {
-        MessageBox(_BUL("Config auto migration failed: unable to make new directory."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration failed: unable to make new directory."), UI_MB_DEFAULT);
         return;
       }
       FILE *fsrc = fopen(CONFIG_PATH_LEGACY, "rb");
       if (fsrc == NULL) {
-        MessageBox(_BUL("Config auto migration failed: unable to open source file."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration failed: unable to open source file."), UI_MB_DEFAULT);
         return;
       }
       FILE *fdst = fopen(CONFIG_PATH, "wb");
       if (fdst == NULL) {
-        MessageBox(_BUL("Config auto migration failed: unable to open destination file."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration failed: unable to open destination file."), UI_MB_DEFAULT);
         fclose(fsrc);
         return;
       }
       unsigned char *csrc = malloc(file_size);
       if (csrc == NULL) {
-        MessageBox(_BUL("Config auto migration failed: failed to allocate memory."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration failed: failed to allocate memory."), UI_MB_DEFAULT);
         fclose(fsrc);
         fclose(fdst);
         return;
       }
       if (fread(csrc, 1, file_size, fsrc) != file_size) {
-        MessageBox(_BUL("Config auto migration failed: failed to read file."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration failed: failed to read file."), UI_MB_DEFAULT);
         fclose(fsrc);
         fclose(fdst);
         free(csrc);
         return;
       }
       if (fwrite(csrc, 1, file_size, fdst) != file_size) {
-        MessageBox(_BUL("Config auto migration failed: failed to write file."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration failed: failed to write file."), UI_MB_DEFAULT);
       } else {
-        MessageBox(_BUL("Config auto migration has been performed."), MB_DEFAULT);
+        MessageBox(_BUL("Config auto migration has been performed."), UI_MB_DEFAULT);
       }
       fclose(fsrc);
       fclose(fdst);
@@ -1584,8 +1583,8 @@ int main(void) {
     (lcd->height - GetFontHeight(MONOSPACE_CJK)) / 2,
     _BUL("Loading..."),
     lcd->width,
-    STR_ALIGN_CENTER,
-    PRINT_NONE
+    LCD_STR_ALIGN_CENTER,
+    LCD_PRINT_NONE
   );
 
   priv.rom = _read_file(priv.rom_file_name, 0, false);
@@ -1613,17 +1612,17 @@ int main(void) {
     break;
 
   case GB_INIT_CARTRIDGE_UNSUPPORTED:
-    MessageBox(_BUL("Unsupported cartridge."), MB_DEFAULT);
+    MessageBox(_BUL("Unsupported cartridge."), UI_MB_DEFAULT);
     exit_cleanup(&gb);
     return 1;
 
   case GB_INIT_INVALID_CHECKSUM:
-    MessageBox(_BUL("Invalid ROM: Checksum failure."), MB_DEFAULT);
+    MessageBox(_BUL("Invalid ROM: Checksum failure."), UI_MB_DEFAULT);
     exit_cleanup(&gb);
     return 1;
 
   default: {
-    messagebox_format(MB_DEFAULT, "Unknown error: %d", gb_ret);
+    messagebox_format(UI_MB_DEFAULT, "Unknown error: %d", gb_ret);
     exit_cleanup(&gb);
     return 1;
   }
@@ -1643,7 +1642,7 @@ int main(void) {
   audio_init();
 
   if (gb_get_save_size_s(&gb, &priv.cart_ram_size) < 0) {
-    MessageBox(_BUL("Unable to get save size."), MB_BUTTON_OK | MB_ICON_ERROR);
+    MessageBox(_BUL("Unable to get save size."), UI_MB_BUTTON_OK | UI_MB_ICON_ERROR);
     exit_cleanup(&gb);
     return 1;
   }
@@ -1652,7 +1651,7 @@ int main(void) {
     if (priv.cart_ram == NULL) {
       MessageBox(
         _BUL("Save data is available but the emulator is unable to load it."),
-        MB_BUTTON_OK | MB_ICON_ERROR
+        UI_MB_BUTTON_OK | UI_MB_ICON_ERROR
       );
       exit_cleanup(&gb);
       return 1;
@@ -1666,7 +1665,7 @@ int main(void) {
       if (color_map_cgb_32 == NULL) {
         MessageBox(
           _BUL("Cannot allocate memory for fast CGB color table."),
-          MB_BUTTON_OK | MB_ICON_ERROR
+          UI_MB_BUTTON_OK | UI_MB_ICON_ERROR
         );
         exit_cleanup(&gb);
         return 1;
@@ -1676,7 +1675,7 @@ int main(void) {
     priv.fb = lcd->surface;
     priv.rotation = lcd->rotation;
     /* Only use the rotation-aware blit when absolutely needed. Saves about 1-2ms on BA802. */
-    if (lcd->rotation != ROTATION_TOP_SIDE_FACING_UP) {
+    if (lcd->rotation != LCD_ROTATION_TOP_SIDE_UP) {
       gb_init_lcd(&gb, &lcd_draw_line_fast_xrgb_rot);
     } else {
       gb_init_lcd(&gb, &lcd_draw_line_fast_xrgb);
@@ -1689,7 +1688,7 @@ int main(void) {
       if (color_map_cgb_16 == NULL) {
         MessageBox(
           _BUL("Cannot allocate memory for fast CGB color table."),
-          MB_BUTTON_OK | MB_ICON_ERROR
+          UI_MB_BUTTON_OK | UI_MB_ICON_ERROR
         );
         exit_cleanup(&gb);
         return 1;
@@ -1697,7 +1696,7 @@ int main(void) {
     }
 #endif
     priv.fb = lcd->surface;
-    priv.rotation = ROTATION_TOP_SIDE_FACING_UP;
+    priv.rotation = LCD_ROTATION_TOP_SIDE_UP;
     if (is_sa7101) {
       gb_init_lcd(&gb, &lcd_draw_line_fast_rgb565_sa7101);
     } else {
@@ -1717,7 +1716,7 @@ int main(void) {
     /* 4-bit LCD machines don't have a hardware-backed framebuffer and
      * we need to blit a 160x1 buffer to the screen line-by-line. */
     priv.fb = lcd->surface;
-    priv.rotation = ROTATION_TOP_SIDE_FACING_UP;
+    priv.rotation = LCD_ROTATION_TOP_SIDE_UP;
     switch (priv.config.l4_lcd_type) {
       case 1:
         gb_init_lcd(&gb, &lcd_draw_line_fast_p4_sa7101_t1);
@@ -1726,16 +1725,16 @@ int main(void) {
         gb_init_lcd(&gb, &lcd_draw_line_fast_p4_sa7101_t2);
         break;
       default:
-        messagebox_format(MB_ICON_ERROR | MB_BUTTON_OK, "Invalid L4 LCD type %d", priv.config.l4_lcd_type);
+        messagebox_format(UI_MB_ICON_ERROR | UI_MB_BUTTON_OK, "Invalid L4 LCD type %d", priv.config.l4_lcd_type);
         exit_cleanup(&gb);
         return 1;
     }
   } else {
     if (priv.config.debug_force_safe_framebuffer) {
-      MessageBox(_BUL("Forcing safe mode. Expect poor performance."), MB_BUTTON_OK | MB_ICON_WARNING);
+      MessageBox(_BUL("Forcing safe mode. Expect poor performance."), UI_MB_BUTTON_OK | UI_MB_ICON_WARNING);
     } else {
       messagebox_format(
-        MB_BUTTON_OK | MB_ICON_WARNING,
+        UI_MB_BUTTON_OK | UI_MB_ICON_WARNING,
         "Fast blit not available for surface bit depth %d. Will use safe mode. Expect poor performance.",
         lcd->surface->depth
       );
@@ -1815,6 +1814,6 @@ static int messagebox_format(unsigned short type, const char *fmt, ...) {
   vsniprintf(message, sizeof(message), fmt, va);
   va_end(va);
 
-  ConvStrToUnicode(message, messagew, MB_ENCODING_UTF8);
+  ConvStrToUnicode(message, messagew, UTF16_MB_ENCODING_UTF8);
   return MessageBox(messagew, type);
 }
